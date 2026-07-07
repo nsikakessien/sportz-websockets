@@ -18,7 +18,7 @@ matchRouter.get("/", async (req, res) => {
   if (!parsed.success) {
     return res.status(400).json({
       error: "Invalid query parameters.",
-      details: parsed.error,
+      issues: parsed.error.issues,
     });
   }
 
@@ -32,22 +32,22 @@ matchRouter.get("/", async (req, res) => {
       .limit(limit);
     res.json({ data });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch matches.", details: error });
+    console.error("Error fetching matches:", error);
+    res.status(500).json({ error: "Failed to fetch matches." });
   }
 });
 
 matchRouter.post("/", async (req, res) => {
   const parsed = createMatchSchema.safeParse(req.body);
-  const {
-    data: { startTime, endTime, homeScore, awayScore },
-  } = parsed;
 
   if (!parsed.success) {
     return res.status(400).json({
       error: "Invalid match data provided.",
-      details: parsed.error,
+      issues: parsed.error.issues,
     });
   }
+
+  const { startTime, endTime, homeScore, awayScore } = parsed.data;
 
   try {
     const [event] = await db
@@ -65,6 +65,7 @@ matchRouter.post("/", async (req, res) => {
       .status(201)
       .json({ message: "Match created successfully.", data: event });
   } catch (error) {
-    res.status(500).json({ error: "Failed to create match.", details: error });
+    console.error("Error creating match:", error);
+    res.status(500).json({ error: "Failed to create match." });
   }
 });
