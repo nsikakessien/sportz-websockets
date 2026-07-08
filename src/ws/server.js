@@ -12,14 +12,58 @@ function broadcast(wss, payload) {
   }
 }
 
+function getAllowedOrigins() {
+  return (
+    process.env.WS_ALLOWED_ORIGINS ||
+    "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173"
+  )
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
 export const attachWebSocketServer = (server) => {
+  const allowedOrigins = getAllowedOrigins();
   const wss = new WebSocketServer({
     server,
     path: "/ws",
     maxPayload: 1024 * 1024,
+    verifyClient: (info, callback) => {
+      if (info.origin && !allowedOrigins.includes(info.origin)) {
+        callback(false, 403, "Origin not allowed");
+        return;
+      }
+
+      callback(true);
+    },
   });
 
   wss.on("connection", (socket) => {
+    socket.isAlive = true;
+
+    socket.on("pong", () => {
+      socket.isAlive = true;
+    });
+
+    const heartbeat = setInterval(() => {
+      if (socket.readyState !== WebSocket.OPEN) {
+        clearInterval(heartbeat);
+        return;
+      }
+
+      if (socket.isAlive === false) {
+        socket.terminate();
+        return;
+      }
+
+      socket.isAlive = false;
+      socket.ping();
+    }, 30000);
+
+    socket.on("close", () => {
+      clearInterval(heartbeat);
+    });
+
     sendJSON(socket, {
       type: "welcome",
       message: "Welcome to the WebSocket server!",
