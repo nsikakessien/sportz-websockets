@@ -6,7 +6,7 @@ import {
   listCommentaryQuerySchema,
 } from "../validation/commentary.js";
 import { db } from "../db/db.js";
-import { commentary } from "../db/schema.js";
+import { commentary, matches } from "../db/schema.js";
 
 const MAX_LIMIT = 100;
 
@@ -68,11 +68,22 @@ commentaryRouter.post("/", async (req, res) => {
   }
 
   try {
+    const matchId = paramsResult.data.id;
+    const existingMatch = await db
+      .select()
+      .from(matches)
+      .where(eq(matches.id, matchId))
+      .limit(1);
+
+    if (existingMatch.length === 0) {
+      return res.status(404).json({ error: "Match not found." });
+    }
+
     const { minute, ...rest } = bodyResult.data;
     const [result] = await db
       .insert(commentary)
       .values({
-        matchId: paramsResult.data.id,
+        matchId,
         minute,
         ...rest,
       })

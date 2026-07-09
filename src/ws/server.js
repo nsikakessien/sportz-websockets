@@ -1,7 +1,9 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { wsArcjet } from "../arcjet.js";
+import { pool } from "../db/db.js";
 
 const matchSubscribers = new Map();
+const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
 function subscribe(matchId, socket) {
   if (!matchSubscribers.has(matchId)) {
@@ -62,6 +64,7 @@ function handleMessage(socket, data) {
     message = JSON.parse(data.toString());
   } catch {
     sendJson(socket, { type: "error", message: "Invalid JSON" });
+    return;
   }
 
   if (message?.type === "subscribe" && Number.isInteger(message.matchId)) {
@@ -118,6 +121,30 @@ export function attachWebSocketServer(server) {
     });
   });
 
+  let listenerClient;
+
+  async function initPubSub() {
+    try {
+      listenerClient = await pool.connect();
+      await listenerClient.query("LISTEN commentary_events");
+      listenerClient.on("notification", (msg) => {
+        if (msg.channel !== "commentary_events") return;
+
+        try {
+          const payload = JSON.parse(msg.payload);
+          if (payload.instanceId === instanceId) return;
+          broadcastToMatch(payload.matchId, payload.data);
+        } catch (err) {
+          console.error("Invalid commentary notification payload:", err);
+        }
+      });
+    } catch (err) {
+      console.error("Failed to initialize commentary pub/sub:", err);
+    }
+  }
+
+  initPubSub();
+
   wss.on("connection", async (socket, req) => {
     socket.isAlive = true;
     socket.on("pong", () => {
@@ -152,7 +179,10 @@ export function attachWebSocketServer(server) {
     });
   }, 30000);
 
-  wss.on("close", () => clearInterval(interval));
+  wss.on("close", () => {
+    clearInterval(interval);
+    listenerClient?.release();
+  });
 
   function broadcastMatchCreated(match) {
     broadcastToAll(wss, { type: "match_created", data: match });
@@ -160,6 +190,18 @@ export function attachWebSocketServer(server) {
 
   function broadcastCommentary(matchId, comment) {
     broadcastToMatch(matchId, { type: "commentary", data: comment });
+
+    pool
+      .query("NOTIFY commentary_events, $1", [
+        JSON.stringify({
+          instanceId,
+          matchId,
+          data: comment,
+        }),
+      ])
+      .catch((err) => {
+        console.error("Failed to publish commentary event:", err);
+      });
   }
 
   return { broadcastMatchCreated, broadcastCommentary };
