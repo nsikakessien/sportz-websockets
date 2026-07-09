@@ -1,21 +1,89 @@
 import { WebSocket, WebSocketServer } from "ws";
 import { wsArcjet } from "../arcjet.js";
+import { pool } from "../db/db.js";
 
-function sendJSON(socket, payload) {
+const matchSubscribers = new Map();
+const instanceId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+function subscribe(matchId, socket) {
+  if (!matchSubscribers.has(matchId)) {
+    matchSubscribers.set(matchId, new Set());
+  }
+
+  matchSubscribers.get(matchId).add(socket);
+}
+
+function unsubscribe(matchId, socket) {
+  const subscribers = matchSubscribers.get(matchId);
+
+  if (!subscribers) return;
+
+  subscribers.delete(socket);
+
+  if (subscribers.size === 0) {
+    matchSubscribers.delete(matchId);
+  }
+}
+
+function cleanupSubscriptions(socket) {
+  for (const matchId of socket.subscriptions) {
+    unsubscribe(matchId, socket);
+  }
+}
+
+function sendJson(socket, payload) {
   if (socket.readyState !== WebSocket.OPEN) return;
   socket.send(JSON.stringify(payload));
 }
 
-function broadcast(wss, payload) {
+function broadcastToAll(wss, payload) {
   for (const client of wss.clients) {
     if (client.readyState !== WebSocket.OPEN) continue;
+
     client.send(JSON.stringify(payload));
   }
 }
 
-export const attachWebSocketServer = (server) => {
+function broadcastToMatch(matchId, payload) {
+  const subscribers = matchSubscribers.get(matchId);
+  if (!subscribers || subscribers.size === 0) return;
+
+  const message = JSON.stringify(payload);
+
+  for (const client of subscribers) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  }
+}
+
+function handleMessage(socket, data) {
+  let message;
+
+  try {
+    message = JSON.parse(data.toString());
+  } catch {
+    sendJson(socket, { type: "error", message: "Invalid JSON" });
+    return;
+  }
+
+  if (message?.type === "subscribe" && Number.isInteger(message.matchId)) {
+    subscribe(message.matchId, socket);
+    socket.subscriptions.add(message.matchId);
+    sendJson(socket, { type: "subscribed", matchId: message.matchId });
+    return;
+  }
+
+  if (message?.type === "unsubscribe" && Number.isInteger(message.matchId)) {
+    unsubscribe(message.matchId, socket);
+    socket.subscriptions.delete(message.matchId);
+    sendJson(socket, { type: "unsubscribed", matchId: message.matchId });
+  }
+}
+
+export function attachWebSocketServer(server) {
   const wss = new WebSocketServer({
-    server,
+    noServer: true,
     path: "/ws",
     maxPayload: 1024 * 1024,
   });
@@ -53,50 +121,88 @@ export const attachWebSocketServer = (server) => {
     });
   });
 
+  let listenerClient;
+
+  async function initPubSub() {
+    try {
+      listenerClient = await pool.connect();
+      await listenerClient.query("LISTEN commentary_events");
+      listenerClient.on("notification", (msg) => {
+        if (msg.channel !== "commentary_events") return;
+
+        try {
+          const payload = JSON.parse(msg.payload);
+          if (payload.instanceId === instanceId) return;
+          broadcastToMatch(payload.matchId, payload.data);
+        } catch (err) {
+          console.error("Invalid commentary notification payload:", err);
+        }
+      });
+    } catch (err) {
+      console.error("Failed to initialize commentary pub/sub:", err);
+    }
+  }
+
+  initPubSub();
+
   wss.on("connection", async (socket, req) => {
     socket.isAlive = true;
-
     socket.on("pong", () => {
       socket.isAlive = true;
     });
 
-    const heartbeat = setInterval(() => {
-      if (socket.readyState !== WebSocket.OPEN) {
-        clearInterval(heartbeat);
-        return;
-      }
+    socket.subscriptions = new Set();
 
-      if (socket.isAlive === false) {
-        socket.terminate();
-        return;
-      }
+    sendJson(socket, { type: "welcome" });
 
-      socket.isAlive = false;
-      socket.ping();
-    }, 30000);
+    socket.on("message", (data) => {
+      handleMessage(socket, data);
+    });
+
+    socket.on("error", () => {
+      socket.terminate();
+    });
 
     socket.on("close", () => {
-      clearInterval(heartbeat);
+      cleanupSubscriptions(socket);
     });
 
-    sendJSON(socket, {
-      type: "welcome",
-      message: "Welcome to the WebSocket server!",
-    });
+    socket.on("error", console.error);
+  });
 
-    socket.on("error", (error) => {
-      console.error("WebSocket error:", error);
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws) => {
+      if (ws.isAlive === false) return ws.terminate();
+
+      ws.isAlive = false;
+      ws.ping();
     });
+  }, 30000);
+
+  wss.on("close", () => {
+    clearInterval(interval);
+    listenerClient?.release();
   });
 
   function broadcastMatchCreated(match) {
-    broadcast(wss, {
-      type: "match_created",
-      data: match,
-    });
+    broadcastToAll(wss, { type: "match_created", data: match });
   }
 
-  return {
-    broadcastMatchCreated,
-  };
-};
+  function broadcastCommentary(matchId, comment) {
+    broadcastToMatch(matchId, { type: "commentary", data: comment });
+
+    pool
+      .query("NOTIFY commentary_events, $1", [
+        JSON.stringify({
+          instanceId,
+          matchId,
+          data: comment,
+        }),
+      ])
+      .catch((err) => {
+        console.error("Failed to publish commentary event:", err);
+      });
+  }
+
+  return { broadcastMatchCreated, broadcastCommentary };
+}
