@@ -1,5 +1,15 @@
 import AgentAPI from "apminsight";
-AgentAPI.config();
+
+const apminsightConfig = {
+  appName: process.env.APMINSIGHT_APP_NAME || "sportz",
+  port: Number(process.env.APMINSIGHT_PORT || process.env.PORT || 10000),
+};
+
+if (process.env.APMINSIGHT_LICENSE_KEY) {
+  apminsightConfig.licenseKey = process.env.APMINSIGHT_LICENSE_KEY;
+}
+
+AgentAPI.config(apminsightConfig);
 
 import express from "express";
 import http from "http";
