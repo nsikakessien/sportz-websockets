@@ -12,7 +12,15 @@ export const matchRouter = Router();
 
 const MAX_LIMIT = 100;
 
+const sendDbUnavailable = (res) => {
+  res.status(503).json({ error: "Database is currently unavailable." });
+};
+
 matchRouter.get("/", async (req, res) => {
+  if (!db) {
+    return sendDbUnavailable(res);
+  }
+
   const parsed = listMatchesQuerySchema.safeParse(req.query);
 
   if (!parsed.success) {
@@ -38,6 +46,10 @@ matchRouter.get("/", async (req, res) => {
 });
 
 matchRouter.post("/", async (req, res) => {
+  if (!db) {
+    return sendDbUnavailable(res);
+  }
+
   const parsed = createMatchSchema.safeParse(req.body);
 
   if (!parsed.success) {

@@ -1,15 +1,5 @@
-import AgentAPI from "apminsight";
-
-const apminsightConfig = {
-  appName: process.env.APMINSIGHT_APP_NAME || "sportz",
-  port: Number(process.env.APMINSIGHT_PORT || process.env.PORT || 10000),
-};
-
-if (process.env.APMINSIGHT_LICENSE_KEY) {
-  apminsightConfig.licenseKey = process.env.APMINSIGHT_LICENSE_KEY;
-}
-
-AgentAPI.config(apminsightConfig);
+import "dotenv/config";
+import "./apminsight-bootstrap.js";
 
 import express from "express";
 import http from "http";
@@ -40,12 +30,43 @@ const { broadcastMatchCreated, broadcastCommentary } =
 app.locals.broadcastMatchCreated = broadcastMatchCreated;
 app.locals.broadcastCommentary = broadcastCommentary;
 
-server.listen(PORT, HOST, () => {
+function logServerReady(listeningPort) {
   const baseUrl =
-    HOST === "0.0.0.0" ? `http://localhost:${PORT}` : `http://${HOST}:${PORT}`;
+    HOST === "0.0.0.0"
+      ? `http://localhost:${listeningPort}`
+      : `http://${HOST}:${listeningPort}`;
 
   console.log(`Server is running on ${baseUrl}`);
   console.log(
     `WebSocket Server is running on ${baseUrl.replace("http", "ws")}/ws`,
   );
+}
+
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    const allowRandomPortFallback =
+      process.env.NODE_ENV !== "production" ||
+      process.env.ALLOW_PORT_FALLBACK === "true";
+
+    if (!allowRandomPortFallback) {
+      throw error;
+    }
+
+    console.warn(
+      `Port ${PORT} is already in use. Using a random available port instead.`,
+    );
+    server.listen(0, HOST, () => {
+      const address = server.address();
+      const listeningPort =
+        typeof address === "object" && address ? address.port : PORT;
+      logServerReady(listeningPort);
+    });
+    return;
+  }
+
+  throw error;
+});
+
+server.listen(PORT, HOST, () => {
+  logServerReady(PORT);
 });
