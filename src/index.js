@@ -1,39 +1,5 @@
 import "dotenv/config";
-
-import fs from "node:fs";
-import path from "node:path";
-
-let AgentAPI = null;
-
-const apminsightConfigPath = path.resolve(process.cwd(), "apminsightnode.json");
-const hasApmInsightLicense =
-  Boolean(process.env.APMINSIGHT_LICENSE_KEY) ||
-  Boolean(
-    fs.existsSync(apminsightConfigPath) &&
-    JSON.parse(fs.readFileSync(apminsightConfigPath, "utf8")).licenseKey,
-  );
-
-if (hasApmInsightLicense) {
-  const apminsightModule = await import("apminsight");
-  AgentAPI = apminsightModule.default;
-
-  const apminsightConfig = {
-    appName: process.env.APMINSIGHT_APP_NAME || "sportz",
-    port: Number(process.env.APMINSIGHT_PORT || process.env.PORT || 10000),
-  };
-
-  if (process.env.APMINSIGHT_LICENSE_KEY) {
-    apminsightConfig.licenseKey = process.env.APMINSIGHT_LICENSE_KEY;
-  }
-
-  try {
-    AgentAPI.config(apminsightConfig);
-  } catch (error) {
-    console.warn("Apminsight configuration warning:", error.message);
-  }
-} else {
-  console.info("Apminsight disabled: no license key configured.");
-}
+import "./apminsight-bootstrap.js";
 
 import express from "express";
 import http from "http";
@@ -78,6 +44,14 @@ function logServerReady(listeningPort) {
 
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
+    const allowRandomPortFallback =
+      process.env.NODE_ENV !== "production" ||
+      process.env.ALLOW_PORT_FALLBACK === "true";
+
+    if (!allowRandomPortFallback) {
+      throw error;
+    }
+
     console.warn(
       `Port ${PORT} is already in use. Using a random available port instead.`,
     );
